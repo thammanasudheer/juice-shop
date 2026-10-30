@@ -42,6 +42,20 @@ def repo_path(path: str) -> str:
     return p.lstrip("/") if p.startswith("/") and not p.startswith("/juice-shop/") else p
 
 
+def clean_fixed_version(value: str) -> str:
+    """Keep only real fixed versions.
+
+    Some advisory feeds encode "no patch exists" as a range rather than an empty field: the
+    Node.js Security WG entry NSWG-ECO-311 (node-serialize) has patched_versions "<0.0.0",
+    which Trivy passes through as FixedVersion. A "<x" bound is never a release you can
+    upgrade to, so it is dropped; otherwise the gate would treat the finding as fixable.
+    Found by the seeded test (SEED-7 was blocked in CI for this reason).
+    """
+    parts = [p.strip() for p in re.split(r"[,|]", value or "")]
+    keep = [p for p in parts if p and not p.startswith("<") and p not in ("0", "0.0.0")]
+    return ", ".join(keep)
+
+
 def _strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", " ", text or "").replace("&nbsp;", " ").strip()
 
@@ -122,7 +136,7 @@ def parse_trivy(data: dict) -> list[Finding]:
                 file=target,
                 package=v.get("PkgName", ""),
                 installed_version=v.get("InstalledVersion", ""),
-                fixed_version=v.get("FixedVersion", "") or "",
+                fixed_version=clean_fixed_version(v.get("FixedVersion", "")),
                 vuln_ids=[vid] + [a for a in (v.get("VendorIDs") or []) if a != vid],
                 cwe=_cwes(v.get("CweIDs")),
                 url=v.get("PrimaryURL", ""),
@@ -238,7 +252,7 @@ def parse_npm_audit(data: dict) -> list[Finding]:
                 title=_first_line(via.get("title", "")),
                 severity=norm_severity(via.get("severity")),
                 file="package-lock.json",
-                package=name, installed_version=v.get("range", ""), fixed_version=fixed,
+                package=name, installed_version=v.get("range", ""), fixed_version=clean_fixed_version(fixed),
                 vuln_ids=[ghsa] if ghsa.startswith("GHSA") else [],
                 cwe=_cwes(via.get("cwe")), url=via.get("url", ""),
             ))

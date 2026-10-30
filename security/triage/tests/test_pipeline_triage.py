@@ -212,3 +212,36 @@ def test_smallest_safe_fixed_version():
     from pftriage.prs import _min_fixed
     assert _min_fixed(["4.17.21, 5.0.0"], "4.17.15") == "4.17.21"
     assert _min_fixed(["1.2.3"], "2.0.0") is None
+    # several advisories: the fix must close ALL of them, not just the oldest
+    assert _min_fixed(["2.11.2", "2.15.2", "2.29.2", "2.29.4"], "2.10.6") == "2.29.4"
+    assert _min_fixed(["1.4.3", "2.3.1", "2.12.1"], "1.4.2") == "2.12.1"
+
+
+def test_mount_prefixes_are_stripped_so_tools_agree():
+    from pftriage.normalize import parse_gitleaks, repo_path
+    assert repo_path("/repo/lib/insecurity.ts") == "lib/insecurity.ts"
+    assert repo_path("/src/package-lock.json") == "package-lock.json"
+    assert repo_path("/security/k8s/deployment.yaml") == "security/k8s/deployment.yaml"
+    assert repo_path("/juice-shop/build/lib/insecurity.js") == "/juice-shop/build/lib/insecurity.js"   # image path kept
+    f = parse_gitleaks([{"RuleID": "generic-api-key", "File": "/repo/security/demo/integration.env", "StartLine": 2}])[0]
+    assert f.file == "security/demo/integration.env"
+
+
+def test_no_patch_sentinel_is_not_a_fix():
+    # NSWG-ECO-311 (node-serialize) has patched_versions "<0.0.0", i.e. no patch exists.
+    # Trivy passes it through as FixedVersion; the seeded test showed the gate treated it as fixable.
+    from pftriage.gate import blocks
+    from pftriage.normalize import clean_fixed_version, parse_trivy
+    assert clean_fixed_version("<0.0.0") == ""
+    assert clean_fixed_version("3.1.7") == "3.1.7"
+    assert clean_fixed_version("2.29.4, 3.0.1") == "2.29.4, 3.0.1"
+    data = {"SchemaVersion": 2, "ArtifactType": "filesystem", "Results": [{"Target": "package-lock.json",
+            "Vulnerabilities": [
+                {"VulnerabilityID": "NSWG-ECO-311", "PkgName": "node-serialize", "InstalledVersion": "0.0.4",
+                 "FixedVersion": "<0.0.0", "Severity": "CRITICAL"},
+                {"VulnerabilityID": "CVE-2022-29078", "PkgName": "ejs", "InstalledVersion": "3.1.6",
+                 "FixedVersion": "3.1.7", "Severity": "CRITICAL"}]}]}
+    serialize, ejs = parse_trivy(data)
+    policy = load_policy(None)
+    assert not blocks(serialize, policy)   # no real fix: reported, not blocked
+    assert blocks(ejs, policy)             # real fix exists: blocked
